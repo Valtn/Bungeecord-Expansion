@@ -14,11 +14,13 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 public final class BungeeExpansion extends PlaceholderExpansion implements PluginMessageListener, Taskable, Configurable {
 
@@ -30,6 +32,7 @@ public final class BungeeExpansion extends PlaceholderExpansion implements Plugi
     private static final Splitter SPLITTER = Splitter.on(",").trimResults();
 
 
+    private int totalPlayerCount                     = 0;
     private final Map<String, Integer>        counts = new HashMap<>();
     private final AtomicReference<BukkitTask> cached = new AtomicReference<>();
 
@@ -46,7 +49,7 @@ public final class BungeeExpansion extends PlaceholderExpansion implements Plugi
 
     @Override
     public String getVersion() {
-        return "2.0";
+        return "2.0-valtn";
     }
 
     @Override
@@ -59,13 +62,20 @@ public final class BungeeExpansion extends PlaceholderExpansion implements Plugi
     public String onRequest(final OfflinePlayer player, String identifier) {
         final int value;
 
-        switch (identifier.toLowerCase()) {
+        identifier = identifier.toLowerCase();
+
+        switch (identifier) {
             case "all":
             case "total":
-                value = counts.values().stream().mapToInt(Integer::intValue).sum();
+                value = this.totalPlayerCount;
                 break;
             default:
-                value = counts.getOrDefault(identifier.toLowerCase(), 0);
+                if (identifier.contains(",")) {
+                    Stream<String> servers = Arrays.stream(identifier.split(","));
+                    value = servers.mapToInt(server -> counts.computeIfAbsent(server, count -> 0)).sum();
+                } else {
+                    value = counts.computeIfAbsent(identifier, count -> 0);
+                }
                 break;
         }
 
@@ -76,12 +86,11 @@ public final class BungeeExpansion extends PlaceholderExpansion implements Plugi
     public void start() {
         final BukkitTask task = Bukkit.getScheduler().runTaskTimer(getPlaceholderAPI(), () -> {
 
-            if (counts.isEmpty()) {
-                sendServersChannelMessage();
-            }
-            else {
-                counts.keySet().forEach(this::sendPlayersChannelMessage);
-            }
+            // Ask for the total player count.
+            this.sendPlayersChannelMessage("ALL");
+
+            // Ask for server specific player counts.
+            counts.keySet().forEach(this::sendPlayersChannelMessage);
 
         }, 20L * 2L, 20L * getLong(CONFIG_INTERVAL, 30));
 
@@ -120,7 +129,13 @@ public final class BungeeExpansion extends PlaceholderExpansion implements Plugi
         final ByteArrayDataInput in = ByteStreams.newDataInput(message);
         switch (in.readUTF()) {
             case PLAYERS_CHANNEL:
-                counts.put(in.readUTF(), in.readInt());
+                String server = in.readUTF();
+                int count = in.readInt();
+                if (server.equalsIgnoreCase("ALL")) {
+                    totalPlayerCount = count;
+                } else {
+                    counts.put(server.toLowerCase(), count);
+                }
                 break;
             case SERVERS_CHANNEL:
                 SPLITTER.split(in.readUTF()).forEach(serverName -> counts.putIfAbsent(serverName, 0));
